@@ -1,0 +1,17 @@
+{
+  "name": "llm-eval-kit",
+  "version": "0.1.0",
+  "description": "Regression testing for chatbots and LLM agents: repeat cases, find flaky ones, measure judge noise, compare versions case by case.",
+  "main": "src/index.js",
+  "bin": { "llm-eval": "bin/llm-eval.js" },
+  "files": ["src", "bin"],
+  "scripts": {
+    "test": "node --test",
+    "demo": "node bin/llm-eval.js run --cases examples/cases.jsonl --bot examples/bots/v1.js --judge examples/judge-mock.js --repeats 5"
+  },
+  "engines": { "node": ">=18" },
+  "keywords": ["llm", "evaluation", "evals", "chatbot", "regression-testing", "llm-as-judge", "ai-agents"],
+  "author": "Ido Guy",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/123idog/llm-eval-kit.git" }
+}
