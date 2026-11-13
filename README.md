@@ -132,6 +132,6 @@ npm test
 
 ## Author
 
-**Ido Guy**, AI Engineer, building and evaluating production conversational AI in Hebrew, Arabic and English. [LinkedIn](https://www.linkedin.com/in/ido-guy)
+**Ido Guy**, AI & Automation Engineer. I design end-to-end AI solutions for sales and operations teams, and measure whether they work. [LinkedIn](https://www.linkedin.com/in/ido-guy)
 
 MIT License.
