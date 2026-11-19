@@ -2,10 +2,12 @@
 
 const fs = require('fs');
 const { runAssertions, assertions } = require('./assertions');
+const { runConversationChecks } = require('./conversation');
 
 /**
  * Load test cases from a .jsonl file (one case per line) or a .json array.
- * A case: { id, input, expect?, rubric?, tags? }
+ * A single-turn case: { id, input, expect?, rubric?, tags? }
+ * A multi-turn case:  { id, turns: ["text" | { user, expect?, recorded? }], expectConversation?, rubric? }
  */
 function loadCases(file) {
   const text = fs.readFileSync(file, 'utf8');
@@ -29,7 +31,13 @@ function validateCases(cases) {
     if (!c || c.id === undefined) throw new Error('every case needs an "id"');
     if (ids.has(c.id)) throw new Error(`duplicate case id "${c.id}"`);
     ids.add(c.id);
-    if (c.input === undefined) throw new Error(`case "${c.id}" has no "input"`);
+    if (c.turns !== undefined) {
+      if (!Array.isArray(c.turns) || !c.turns.length) throw new Error(`case "${c.id}": "turns" must be a non-empty array`);
+      c.turns.forEach((t, i) => {
+        const user = typeof t === 'string' ? t : t && t.user;
+        if (typeof user !== 'string') throw new Error(`case "${c.id}" turn ${i + 1} has no "user" text`);
+      });
+    } else if (c.input === undefined) throw new Error(`case "${c.id}" has no "input" or "turns"`);
   }
 }
 
@@ -55,6 +63,36 @@ async function pool(tasks, concurrency) {
   return results;
 }
 
+const turnOf = (t) => (typeof t === 'string' ? { user: t } : t);
+
+/**
+ * Play a multi-turn case. Each turn the bot gets the user's message plus the history so far.
+ * history "own":      the bot's OWN earlier replies (what really happens in production)
+ * history "recorded": the replies recorded in the case (what most single-turn evals implicitly test)
+ */
+async function playConversation(c, bot, { attempt, history, timeoutMs }) {
+  const messages = [];
+  const transcript = [];
+  const checks = [];
+  for (let i = 0; i < c.turns.length; i++) {
+    const t = turnOf(c.turns[i]);
+    const ctx = { case: c, attempt, turn: i + 1, history: messages.map((m) => ({ ...m })) };
+    const raw = await withTimeout(Promise.resolve(bot(t.user, ctx)), timeoutMs);
+    const reply = typeof raw === 'string' ? raw : JSON.stringify(raw);
+    transcript.push({ turn: i + 1, user: t.user, reply });
+    for (const x of runAssertions(reply, t.expect)) checks.push({ ...x, check: `turn${i + 1}:${x.check}` });
+    messages.push({ role: 'user', content: t.user });
+    if (history === 'recorded' && i < c.turns.length - 1) {
+      if (typeof t.recorded !== 'string') throw new Error(`case "${c.id}" turn ${i + 1} has no "recorded" reply (needed for --history recorded)`);
+      messages.push({ role: 'assistant', content: t.recorded });
+    } else {
+      messages.push({ role: 'assistant', content: reply });
+    }
+  }
+  checks.push(...runConversationChecks(transcript, c.expectConversation));
+  return { transcript, checks };
+}
+
 /**
  * Run every case `repeats` times against `bot`.
  *
@@ -67,9 +105,11 @@ async function pool(tasks, concurrency) {
  * @param {number} [opts.concurrency=2]
  * @param {number} [opts.timeoutMs=60000]
  * @param {string} [opts.label]          e.g. "v2" or a prompt revision
+ * @param {'own'|'recorded'} [opts.history='own']  history used for multi-turn cases
  */
 async function runSuite(opts) {
-  const { cases, bot, judge, repeats = 1, concurrency = 2, timeoutMs = 60000, label = '' } = opts;
+  const { cases, bot, judge, repeats = 1, concurrency = 2, timeoutMs = 60000, label = '', history = 'own' } = opts;
+  if (history !== 'own' && history !== 'recorded') throw new Error('history must be "own" or "recorded"');
   validateCases(cases);
   if (typeof bot !== 'function') throw new TypeError('bot must be a function');
 
@@ -80,12 +120,19 @@ async function runSuite(opts) {
         const started = Date.now();
         const r = { id: c.id, attempt, reply: null, ms: 0, error: null, checks: [], pass: false };
         try {
-          const reply = await withTimeout(Promise.resolve(bot(c.input, { case: c, attempt })), timeoutMs);
-          r.reply = typeof reply === 'string' ? reply : JSON.stringify(reply);
-          r.checks = runAssertions(r.reply, c.expect);
+          if (c.turns) {
+            const conv = await playConversation(c, bot, { attempt, history, timeoutMs });
+            r.transcript = conv.transcript;
+            r.reply = conv.transcript[conv.transcript.length - 1].reply;
+            r.checks = conv.checks;
+          } else {
+            const reply = await withTimeout(Promise.resolve(bot(c.input, { case: c, attempt })), timeoutMs);
+            r.reply = typeof reply === 'string' ? reply : JSON.stringify(reply);
+            r.checks = runAssertions(r.reply, c.expect);
+          }
           if (judge && c.rubric) {
             try {
-              const j = await withTimeout(Promise.resolve(judge({ input: c.input, reply: r.reply, case: c })), timeoutMs);
+              const j = await withTimeout(Promise.resolve(judge({ input: c.input ?? c.turns.map((t) => turnOf(t).user), reply: r.reply, transcript: r.transcript, case: c })), timeoutMs);
               r.score = Number(j.score);
               r.judgeReason = j.reason || '';
             } catch (e) {
@@ -106,7 +153,7 @@ async function runSuite(opts) {
   return {
     label,
     startedAt: new Date().toISOString(),
-    meta: { cases: cases.length, repeats, attempts: results.length, errors: results.filter((r) => r.error).length },
+    meta: { cases: cases.length, repeats, attempts: results.length, errors: results.filter((r) => r.error).length, history },
     results,
   };
 }
@@ -136,8 +183,17 @@ function summarize(run) {
     const failedChecks = {};
     for (const r of ok) for (const c of r.checks) if (!c.pass) failedChecks[c.check] = (failedChecks[c.check] || 0) + 1;
     const scores = ok.map((r) => r.score).filter((s) => typeof s === 'number' && !Number.isNaN(s));
+    const firstFail = ok.find((r) => !r.pass);
     cases.push({
       id,
+      firstFailure: firstFail
+        ? {
+            attempt: firstFail.attempt,
+            checks: firstFail.checks.filter((c) => !c.pass).map((c) => ({ check: c.check, detail: c.detail })),
+            transcript: firstFail.transcript,
+            reply: firstFail.reply,
+          }
+        : null,
       attempts: rs.length,
       errors: rs.length - ok.length,
       passRate: ok.length ? round(passed / ok.length) : 0,
@@ -211,7 +267,7 @@ function compare(baseRun, candRun) {
 
 const pct = (x) => `${Math.round(x * 100)}%`;
 
-function formatSummary(s) {
+function formatSummary(s, { transcripts = false } = {}) {
   const lines = [];
   lines.push(`# Eval run${s.label ? `: ${s.label}` : ''}`, '');
   lines.push(`**${s.denominator}**`, '');
@@ -225,6 +281,19 @@ function formatSummary(s) {
     const score = c.score ? `${c.score.mean} ± ${c.score.sd}` : '';
     const flag = c.flaky ? ' ⚠ flaky' : c.passRate === 1 ? '' : ' ✖';
     lines.push(`| ${c.id} | ${pct(c.passRate)}${flag}${c.errors ? ` (${c.errors} err)` : ''} | ${fails} | ${score} | ${c.medianMs} |`);
+  }
+  const failing = s.cases.filter((c) => c.firstFailure);
+  if (failing.length) {
+    lines.push('', '### Why they failed (first failing attempt)', '');
+    for (const c of failing) {
+      for (const x of c.firstFailure.checks) lines.push(`- **${c.id}** · ${x.check}: ${x.detail}`);
+      if (transcripts) {
+        const t = c.firstFailure.transcript || [{ turn: 1, user: '(input)', reply: c.firstFailure.reply }];
+        lines.push('', '```text');
+        for (const m of t) lines.push(`[${m.turn}] user: ${m.user}`, `    bot:  ${m.reply}`);
+        lines.push('```', '');
+      }
+    }
   }
   return lines.join('\n');
 }

@@ -10,7 +10,7 @@
     "demo": "node bin/llm-eval.js run --cases examples/cases.jsonl --bot examples/bots/v1.js --judge examples/judge-mock.js --repeats 5"
   },
   "engines": { "node": ">=18" },
-  "keywords": ["llm", "evaluation", "evals", "chatbot", "regression-testing", "llm-as-judge", "ai-agents"],
+  "keywords": ["llm", "evaluation", "evals", "chatbot", "regression-testing", "llm-as-judge", "ai-agents", "multi-turn", "model-selection"],
   "author": "Ido Guy",
   "license": "MIT",
   "repository": { "type": "git", "url": "https://github.com/123idog/llm-eval-kit.git" }

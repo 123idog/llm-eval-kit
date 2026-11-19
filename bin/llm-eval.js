@@ -8,10 +8,11 @@ const kit = require('../src/index.js');
 const HELP = `Usage:
   llm-eval run     --cases <file.jsonl> --bot <bot.js> [--judge <judge.js>] [--repeats 3]
                    [--concurrency 2] [--timeout 60000] [--label v2] [--out run.json]
-  llm-eval report  <run.json>
+                   [--history own|recorded]   multi-turn cases: bot sees its own replies (default) or the recorded ones
+  llm-eval report  <run.json> [--transcripts]   print the conversation of each failing case
   llm-eval compare <base.json> <candidate.json> [--fail-on-regression]
 
-bot.js   exports: async (input, { case, attempt }) => string
+bot.js   exports: async (input, { case, attempt, turn, history }) => string
 judge.js exports: async ({ input, reply, case }) => ({ score, reason })   (used for cases with "rubric")`;
 
 function parse(argv) {
@@ -47,7 +48,8 @@ async function main() {
       repeats: Number(args.repeats || 1),
       concurrency: Number(args.concurrency || 2),
       timeoutMs: Number(args.timeout || 60000),
-      label: args.label || path.basename(args.bot, '.js'),
+      history: args.history || 'own',
+      label: args.label || path.basename(args.bot, '.js') + (args.history === 'recorded' ? ' (recorded history)' : ''),
     });
     if (args.out) fs.writeFileSync(args.out, JSON.stringify(run, null, 2));
     console.log(kit.formatSummary(kit.summarize(run)));
@@ -56,7 +58,7 @@ async function main() {
   }
   if (cmd === 'report') {
     if (!args._[0]) throw new Error('report needs <run.json>');
-    console.log(kit.formatSummary(kit.summarize(readJson(args._[0]))));
+    console.log(kit.formatSummary(kit.summarize(readJson(args._[0])), { transcripts: !!args.transcripts }));
     return 0;
   }
   if (cmd === 'compare') {

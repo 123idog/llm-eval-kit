@@ -4,7 +4,7 @@
 ![dependencies: 0](https://img.shields.io/badge/dependencies-0-brightgreen)
 ![license: MIT](https://img.shields.io/badge/license-MIT-blue)
 
-**Regression testing for chatbots and LLM agents: run a fixed set of conversations against two versions and see what broke, what got better, and what's just noise.**
+**Regression testing for chatbots and LLM agents: run a fixed set of conversations against two versions and see what broke, what got better, and what's just noise. Replays whole conversations, not just single replies.**
 
 You changed the prompt. The overall pass rate went **up**. Ship it?
 
@@ -27,11 +27,12 @@ $ llm-eval compare runs/v1.json runs/v2.json
 ...
 ```
 
-The new version fixed three things and quietly broke one: the price answer lost its currency. The LLM judge **didn't notice**, because its score moved less than its own run-to-run noise. Three habits catch this:
+The new version fixed three things and quietly broke one: the price answer lost its currency. The LLM judge **didn't notice**, because its score moved less than its own run-to-run noise. Four habits catch this:
 
 1. **Compare case by case, not averages.** A better average can hide a broken case.
 2. **Repeat each case.** LLMs are non-deterministic. A case that passes 4 of 5 times is **flaky**, not passing.
 3. **Measure the judge's noise.** If re-scoring the same reply moves the score by ±1, a +0.7 "improvement" means nothing.
+4. **Replay whole conversations, with the bot's own history.** A model can win every single-turn test and still fall apart over five turns ([see below](#5-multi-turn-replay-why-single-turn-evals-lie)).
 
 The reasoning behind this is in [LLM Evaluation in Production](https://github.com/123idog/llm-evaluation-in-production).
 
@@ -107,6 +108,59 @@ llm-eval compare baseline.json candidate.json --fail-on-regression && ./deploy.s
 
 ---
 
+## 5. Multi-turn replay: why single-turn evals lie
+
+Most evals test one reply at a time, with a **recorded** conversation as context: the history is what a human agent said. In production the bot reads **its own** earlier replies. Those are different tests, and they can rank models in opposite order.
+
+```text
+                     history = recorded   history = own
+model-a                    80%                 80%
+model-b                   100%                 60%
+```
+
+With a human's replies as context, model B looks better. With its own, it doesn't recognise its own wording of the budget question and asks it again every turn:
+
+```text
+$ llm-eval report b-own.json --transcripts
+
+- buy-road · conversation:noRepeatedQuestion: asked twice: "how much would you like to spend?" (turns 1 and 2)
+
+[1] user: Hi, I'm looking for a new bike
+    bot:  How much would you like to spend?
+[2] user: Around 3000
+    bot:  How much would you like to spend?
+[3] user: Road
+    bot:  How much would you like to spend?
+```
+
+The same reversal happened in a real model migration: the model that won the single-turn comparison repeated questions, ignored messages and missed handoffs once it had to carry a conversation.
+
+### Multi-turn cases
+
+```json
+{"id": "buy-road", "turns": [
+  {"user": "Hi, I'm looking for a new bike", "recorded": "Happy to help! What's your budget?"},
+  {"user": "Around 3000", "recorded": "Road or mountain bike?"},
+  {"user": "Road", "recorded": "What frame size do you ride?"},
+  {"user": "56", "expect": {"contains": ["recommend"]}}
+], "expectConversation": {"noRepeatedQuestion": true}}
+```
+
+- `turns[].expect`: the same checks as single-turn cases, reported as `turn4:contains`.
+- `turns[].recorded`: the real agent reply, used only with `--history recorded`. Build cases from real conversations and you get both for free.
+- `expectConversation`: `noRepeatedQuestion` (Hebrew and Arabic question marks included), `handoffBy: {marker, turn}`, `containsSomewhere`, `maxTurns`.
+- The bot gets `{ turn, history }`, with history as `[{role, content}]`, ready to pass to a chat API. The judge gets the whole `transcript`.
+
+```bash
+llm-eval run --cases examples/conversations.jsonl --bot examples/bots/model-b.js --history recorded --out b-rec.json
+llm-eval run --cases examples/conversations.jsonl --bot examples/bots/model-b.js --out b-own.json
+llm-eval report b-own.json --transcripts
+```
+
+When choosing between models, run with `--history own` (the default). Use `recorded` to show *why* a single-turn comparison disagreed.
+
+---
+
 ## Library API
 
 ```js
@@ -126,7 +180,7 @@ Errors and timeouts are counted per attempt and reported in the denominator (`8 
 npm test
 ```
 
-13 tests, using Node's built-in runner and no dependencies. All demo data is invented (a fictional bike shop).
+20 tests, using Node's built-in runner and no dependencies. All demo data is invented (a fictional bike shop).
 
 ---
 

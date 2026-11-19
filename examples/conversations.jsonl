@@ -1,0 +1,7 @@
+// Multi-turn cases for the same fictional bike shop. "recorded" = what a human agent actually replied,
+// used only with --history recorded. One conversation per line.
+{"id": "buy-road", "turns": [{"user": "Hi, I'm looking for a new bike", "recorded": "Happy to help! What's your budget?"}, {"user": "Around 3000", "recorded": "Road or mountain bike?"}, {"user": "Road", "recorded": "What frame size do you ride?"}, {"user": "56", "expect": {"contains": ["recommend"]}}], "expectConversation": {"noRepeatedQuestion": true}}
+{"id": "buy-mountain", "turns": [{"user": "Looking for a mountain bike for trails", "recorded": "Nice! What's your budget?"}, {"user": "Up to 2500", "recorded": "What frame size do you ride?"}, {"user": "52", "expect": {"contains": ["recommend"]}}], "expectConversation": {"noRepeatedQuestion": true}}
+{"id": "complaint-handoff", "turns": [{"user": "My order arrived with a broken wheel", "recorded": "I'm so sorry! Could you send a photo of the wheel?"}, {"user": "I already sent two photos. I want to talk to a person."}], "expectConversation": {"handoffBy": {"marker": "[HANDOFF]", "turn": 2}}}
+{"id": "hours-he", "turns": [{"user": "מתי אתם פתוחים ביום שישי?", "expect": {"contains": ["09:00"], "language": "hebrew"}}]}
+{"id": "price-he", "turns": [{"user": "כמה עולה תיקון פנצ'ר?", "expect": {"contains": ["₪"], "language": "hebrew"}}]}

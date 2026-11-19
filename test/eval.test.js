@@ -53,7 +53,7 @@ test('loadCases validates ids and inputs', () => {
 
 test('runSuite: denominator is explicit and repeats multiply attempts', async () => {
   const run = await kit.runSuite({ cases, bot: v1, repeats: 3, label: 'v1' });
-  assert.deepEqual(run.meta, { cases: 8, repeats: 3, attempts: 24, errors: 0 });
+  assert.deepEqual(run.meta, { cases: 8, repeats: 3, attempts: 24, errors: 0, history: 'own' });
   const s = kit.summarize(run);
   assert.equal(s.denominator, '8 cases × 3 repeats = 24 attempts, 0 errors');
 });
@@ -138,4 +138,75 @@ test('CLI: run → compare with --fail-on-regression exits 1', () => {
   }
   assert.equal(code, 1);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// ---- multi-turn replay ----------------------------------------------------
+const { runConversationChecks } = require('../src/conversation.js');
+const convs = kit.loadCases(path.join(ROOT, 'examples', 'conversations.jsonl'));
+const modelA = require('../examples/bots/model-a.js');
+const modelB = require('../examples/bots/model-b.js');
+
+test('multi-turn: cases validate turns', () => {
+  assert.equal(convs.length, 5);
+  assert.throws(() => kit.validateCases([{ id: 'x', turns: [] }]), /non-empty/);
+  assert.throws(() => kit.validateCases([{ id: 'x', turns: [{ recorded: 'hi' }] }]), /turn 1 has no "user"/);
+});
+
+test('multi-turn: the ranking flips between recorded and own history', async () => {
+  const rate = async (bot, history) => kit.summarize(await kit.runSuite({ cases: convs, bot, history })).passRate;
+  assert.equal(await rate(modelA, 'recorded'), 0.8);
+  assert.equal(await rate(modelB, 'recorded'), 1);
+  assert.equal(await rate(modelA, 'own'), 0.8);
+  assert.equal(await rate(modelB, 'own'), 0.6);
+});
+
+test('multi-turn: the bot receives its own replies as history by default', async () => {
+  const seen = [];
+  const bot = async (input, { history, turn }) => {
+    seen.push({ turn, history });
+    return `reply ${turn}`;
+  };
+  await kit.runSuite({ cases: [{ id: 'c', turns: [{ user: 'a', recorded: 'HUMAN' }, 'b'] }], bot });
+  assert.deepEqual(seen[1].history, [{ role: 'user', content: 'a' }, { role: 'assistant', content: 'reply 1' }]);
+  seen.length = 0;
+  await kit.runSuite({ cases: [{ id: 'c', turns: [{ user: 'a', recorded: 'HUMAN' }, 'b'] }], bot, history: 'recorded' });
+  assert.equal(seen[1].history[1].content, 'HUMAN');
+});
+
+test('multi-turn: recorded history without a recorded reply is an error, not a silent pass', async () => {
+  const run = await kit.runSuite({ cases: [{ id: 'c', turns: ['a', 'b'] }], bot: async () => 'x', history: 'recorded' });
+  assert.equal(run.meta.errors, 1);
+  assert.match(run.results[0].error, /no "recorded" reply/);
+});
+
+test('multi-turn: per-turn checks are labelled by turn and failures explain themselves', async () => {
+  const run = await kit.runSuite({ cases: convs, bot: modelB });
+  const s = kit.summarize(run);
+  const road = s.cases.find((c) => c.id === 'buy-road');
+  assert.deepEqual(Object.keys(road.failedChecks).sort(), ['conversation:noRepeatedQuestion', 'turn4:contains']);
+  assert.match(kit.formatSummary(s), /asked twice: "how much would you like to spend\?" \(turns 1 and 2\)/);
+  assert.match(kit.formatSummary(s, { transcripts: true }), /\[2\] user: Around 3000/);
+});
+
+test('conversation checks: repeated questions in Arabic, late handoff, unknown checks', () => {
+  const t = (...replies) => replies.map((reply, i) => ({ turn: i + 1, user: 'u', reply }));
+  const [rep] = runConversationChecks(t('كم ميزانيتك؟', 'تمام. كم ميزانيتك؟'), { noRepeatedQuestion: true });
+  assert.equal(rep.pass, false);
+  const [late] = runConversationChecks(t('a', 'b', 'ok [HANDOFF]'), { handoffBy: { turn: 2 } });
+  assert.match(late.detail, /at turn 3, expected by turn 2/);
+  const [some] = runConversationChecks(t('Price is 40', 'Bye'), { containsSomewhere: ['price', 'bye'] });
+  assert.equal(some.pass, true);
+  const [unk] = runConversationChecks(t('a'), { noRepeatedQuestoin: true });
+  assert.equal(unk.pass, false);
+});
+
+test('multi-turn: the judge gets the whole transcript', async () => {
+  let got;
+  const judge = async (args) => {
+    got = args;
+    return { score: 7 };
+  };
+  await kit.runSuite({ cases: [{ id: 'c', turns: ['hi', 'bye'], rubric: 'polite' }], bot: async (i) => `echo ${i}`, judge });
+  assert.equal(got.transcript.length, 2);
+  assert.deepEqual(got.input, ['hi', 'bye']);
 });
