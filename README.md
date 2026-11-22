@@ -34,8 +34,6 @@ The new version fixed three things and quietly broke one: the price answer lost 
 3. **Measure the judge's noise.** If re-scoring the same reply moves the score by ±1, a +0.7 "improvement" means nothing.
 4. **Replay whole conversations, with the bot's own history.** A model can win every single-turn test and still fall apart over five turns ([see below](#5-multi-turn-replay-why-single-turn-evals-lie)).
 
-The reasoning behind this is in [LLM Evaluation in Production](https://github.com/123idog/llm-evaluation-in-production).
-
 ---
 
 ## Quick start
